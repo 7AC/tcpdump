@@ -604,7 +604,7 @@ main(int argc, char **argv)
 	register int cnt, op, i;
 	bpf_u_int32 localnet, netmask;
 	register char *cp, *infile, *cmdbuf, *device, *RFileName, *WFileName;
-        int WFileNameOffset;
+        int WFileIndex;
 	pcap_handler callback;
 	int type;
 	struct bpf_program fcode;
@@ -641,7 +641,7 @@ main(int argc, char **argv)
 	infile = NULL;
 	RFileName = NULL;
 	WFileName = NULL;
-        WFileNameOffset = 0;
+        WFileIndex = 0;
 	if ((cp = strrchr(argv[0], '/')) != NULL)
 		program_name = cp + 1;
 	else
@@ -655,7 +655,7 @@ main(int argc, char **argv)
 #endif
 
 	while (
-	    (op = getopt(argc, argv, "aAb" B_FLAG "c:C:d" D_FLAG "eE:fF:G:hHi:" I_FLAG j_FLAG J_FLAG "KlLm:M:nNo:Opqr:Rs:StT:u" U_FLAG "vw:W:xXy:Yz:Z:")) != -1)
+	    (op = getopt(argc, argv, "aAb" B_FLAG "c:C:d" D_FLAG "eE:fF:G:hHi:" I_FLAG j_FLAG J_FLAG "KlLm:M:nNOpqr:Rs:StT:u" U_FLAG "vw:W:xXy:Yz:Z:@:")) != -1)
 		switch (op) {
 
 		case 'a':
@@ -869,12 +869,6 @@ main(int argc, char **argv)
 			++Nflag;
 			break;
 
-                case 'o':
-                        WFileNameOffset = atoi(optarg);
-                        if (WFileNameOffset < 0)
-                                error("invalid output file offset %s", optarg);
-                        break;
-
 		case 'O':
 			Oflag = 0;
 			break;
@@ -1014,6 +1008,12 @@ main(int argc, char **argv)
 				/* NOTREACHED */
 			}
 			break;
+
+                case '@':
+                        WFileIndex = atoi(optarg);
+                        if (WFileIndex < 0)
+                                error("invalid output file offset %s", optarg);
+                        break;
 
 		default:
 			usage();
@@ -1305,14 +1305,15 @@ main(int argc, char **argv)
 		if (dumpinfo.CurrentFileName == NULL)
 			error("malloc of dumpinfo.CurrentFileName");
 
+                WFileIndex = WFileIndex % Wflag;
 		/* We do not need numbering for dumpfiles if Cflag isn't set. */
 		if (Cflag != 0) {
-		  MakeFilename(dumpinfo.CurrentFileName, WFileName, WFileNameOffset, WflagChars);
+		  MakeFilename(dumpinfo.CurrentFileName, WFileName, WFileIndex, WflagChars);
                   /* Offset the count too so rotated names are continuous */
-                  Cflag_count = WFileNameOffset;
+                  Cflag_count = WFileIndex;
                 }
 		else
-		  MakeFilename(dumpinfo.CurrentFileName, WFileName, WFileNameOffset, 0);
+		  MakeFilename(dumpinfo.CurrentFileName, WFileName, WFileIndex, 0);
 
 		p = pcap_dump_open(pd, dumpinfo.CurrentFileName);
 		if (p == NULL)
@@ -1913,13 +1914,13 @@ usage(void)
 	(void)fprintf(stderr,
 "\t\t[ -C file_size ] [ -E algo:secret ] [ -F file ] [ -G seconds ]\n");
 	(void)fprintf(stderr,
-"\t\t[ -i interface ]" j_FLAG_USAGE " [ -M secret ] [ -o file_offset ]\n");
+"\t\t[ -i interface ]" j_FLAG_USAGE " [ -M secret ]\n");
 	(void)fprintf(stderr,
 "\t\t[ -r file ] [ -s snaplen ] [ -T type ] [ -w file ]\n");
 	(void)fprintf(stderr,
 "\t\t[ -W filecount ] [ -y datalinktype ] [ -z command ]\n");
 	(void)fprintf(stderr,
-"\t\t[ -Z user ] [ expression ]\n");
+"\t\t[ -Z user ] [ -@ file_index ] [ expression ]\n");
 	exit(1);
 }
 
