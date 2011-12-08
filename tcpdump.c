@@ -69,6 +69,7 @@ extern int SIZE_BUF;
 #ifndef WIN32
 #include <sys/wait.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <pwd.h>
 #include <grp.h>
 #include <errno.h>
@@ -106,6 +107,7 @@ int32_t thiszone;		/* seconds offset from gmt to local time */
 
 /* Forwards */
 static RETSIGTYPE cleanup(int);
+static RETSIGTYPE save_state_and_cleanup(int);
 static RETSIGTYPE child_cleanup(int);
 static void usage(void) __attribute__((noreturn));
 static void show_dlts_and_exit(const char *device, pcap_t *pd) __attribute__((noreturn));
@@ -345,6 +347,8 @@ lookup_ndo_printer(int type)
 }
 
 static pcap_t *pd;
+static char file_name[FILENAME_MAX] = "";
+static int file_index = 0;
 
 static int supports_monitor_mode;
 
@@ -552,7 +556,6 @@ getWflagChars(int x)
 	return c;
 }
 
-
 static void
 MakeFilename(char *buffer, char *orig_name, int cnt, int max_chars)
 {
@@ -596,6 +599,17 @@ static int tcpdump_printf(netdissect_options *ndo _U_,
   va_end(args);
 
   return ret;
+}
+
+static pcap_dumper_t *pcap_dump_open_and_save_ctx(pcap_t *p, const char *fname, const char* base_name, int count)
+{
+  pcap_dumper_t* dumper = pcap_dump_open(p, fname);
+  if (fname && dumper) {
+    if (!file_name[0])
+      strncpy(file_name, base_name, FILENAME_MAX - 1);
+    file_index = count;
+  }
+  return dumper;
 }
 
 int
@@ -1010,11 +1024,9 @@ main(int argc, char **argv)
 			break;
 
                 case '@':
-                        WFileIndex = atoi(optarg);
-                        if (WFileIndex < 0)
-                                error("invalid output file offset %s", optarg);
+                        if (optarg)
+                                WFileIndex = atoi(optarg);
                         break;
-
 		default:
 			usage();
 			/* NOTREACHED */
@@ -1261,6 +1273,7 @@ main(int argc, char **argv)
 	(void)setsignal(SIGPIPE, cleanup);
 	(void)setsignal(SIGTERM, cleanup);
 	(void)setsignal(SIGINT, cleanup);
+	(void)setsignal(SIGUSR1, save_state_and_cleanup);
 #endif /* WIN32 */
 #if defined(HAVE_FORK) || defined(HAVE_VFORK)
 	(void)setsignal(SIGCHLD, child_cleanup);
@@ -1305,17 +1318,17 @@ main(int argc, char **argv)
 		if (dumpinfo.CurrentFileName == NULL)
 			error("malloc of dumpinfo.CurrentFileName");
 
-                WFileIndex = WFileIndex % Wflag;
+                if (Wflag != 0)
+                  WFileIndex = WFileIndex % Wflag;
 		/* We do not need numbering for dumpfiles if Cflag isn't set. */
 		if (Cflag != 0) {
 		  MakeFilename(dumpinfo.CurrentFileName, WFileName, WFileIndex, WflagChars);
                   /* Offset the count too so rotated names are continuous */
                   Cflag_count = WFileIndex;
-                }
-		else
+                } else
 		  MakeFilename(dumpinfo.CurrentFileName, WFileName, WFileIndex, 0);
 
-		p = pcap_dump_open(pd, dumpinfo.CurrentFileName);
+		p = pcap_dump_open_and_save_ctx(pd, dumpinfo.CurrentFileName, WFileName, WFileIndex);
 		if (p == NULL)
 			error("%s", pcap_geterr(pd));
 		if (Cflag != 0 || Gflag != 0) {
@@ -1475,6 +1488,40 @@ cleanup(int signo _U_)
 	}
 	exit(0);
 #endif
+}
+
+/* Store the context of the current run to /var/tmp/tcpdump/<pid> */
+static RETSIGTYPE
+save_state_and_cleanup(int sgno _U_)
+{
+  const char* dump_ctx_dir = "/var/tmp/tcpdump";
+  char dump_ctx_file_name[FILENAME_MAX] = "";
+  FILE* dump_ctx_file = NULL;
+  warning("Catching signal %d, attempting to save context", sgno);
+  if (!file_name || !file_name[0]) {
+    warning("No dump file found, skipping context save");
+    cleanup(sgno);
+    exit(0);
+  }
+  errno = 0;
+  if (mkdir(dump_ctx_dir, S_IRWXU|S_IRWXG|S_IRWXO) && errno != EEXIST) {
+    error("Unable to create %s (errno=%d)", dump_ctx_dir, errno);
+    cleanup(sgno);
+    exit(0);
+  }
+  if (sprintf(dump_ctx_file_name, "%s/%d", dump_ctx_dir, getpid()) <= 0) {
+    error("Failed to create context file name");
+    cleanup(sgno);
+    exit(0);
+  }
+  if (!(dump_ctx_file = fopen(dump_ctx_file_name, "w"))) {
+    error("Failed to open %s", dump_ctx_file_name);
+    cleanup(sgno);
+    exit(0);
+  }
+  fprintf(dump_ctx_file, "%s\n%d\n", file_name, file_index);
+  fclose(dump_ctx_file);
+  cleanup(sgno);
 }
 
 /*
@@ -1647,7 +1694,7 @@ dump_packet_and_trunc(u_char *user, const struct pcap_pkthdr *h, const u_char *s
 			else
 				MakeFilename(dump_info->CurrentFileName, dump_info->WFileName, 0, 0);
 
-			dump_info->p = pcap_dump_open(dump_info->pd, dump_info->CurrentFileName);
+			dump_info->p = pcap_dump_open_and_save_ctx(dump_info->pd, dump_info->CurrentFileName, dump_info->WFileName, 0);
 			if (dump_info->p == NULL)
 				error("%s", pcap_geterr(pd));
 		}
@@ -1681,7 +1728,7 @@ dump_packet_and_trunc(u_char *user, const struct pcap_pkthdr *h, const u_char *s
 		if (dump_info->CurrentFileName == NULL)
 			error("dump_packet_and_trunc: malloc");
 		MakeFilename(dump_info->CurrentFileName, dump_info->WFileName, Cflag_count, WflagChars);
-		dump_info->p = pcap_dump_open(dump_info->pd, dump_info->CurrentFileName);
+		dump_info->p = pcap_dump_open_and_save_ctx(dump_info->pd, dump_info->CurrentFileName, dump_info->WFileName, Cflag_count);
 		if (dump_info->p == NULL)
 			error("%s", pcap_geterr(pd));
 	}
